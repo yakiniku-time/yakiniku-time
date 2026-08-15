@@ -65,21 +65,31 @@ const emailToUsername = (e) => e.split("@")[0];
 
 const bookingsCol = collection(db, "bookings");
 function listenBookings(cb) {
-  const q = query(bookingsCol, orderBy("date"), orderBy("time"));
-  return onSnapshot(q, (snap) => cb(snap.docs.map((d) => ({ id: d.id, ...d.data() }))), (err) => console.error(err));
+  // 淨係用一個orderBy，唔使Firestore composite index；時間排序喺瀏覽器度自己做
+  const q = query(bookingsCol, orderBy("date"));
+  return onSnapshot(q, (snap) => {
+    const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    list.sort((a, b) => (a.date + (a.time || "")).localeCompare(b.date + (b.time || "")));
+    cb(list);
+  }, (err) => console.error("listenBookings error:", err));
 }
-async function nextVisitNo(igHandle, threadsHandle) {
-  if (!igHandle && !threadsHandle) return 1;
+async function countArrivedFor(igHandle, threadsHandle) {
+  if (!igHandle && !threadsHandle) return 0;
   const snap = await getDocs(query(bookingsCol, where("status", "==", "arrived")));
   let count = 0;
   snap.forEach((d) => {
     const data = d.data();
     if ((igHandle && data.igHandle === igHandle) || (threadsHandle && data.threadsHandle === threadsHandle)) count += 1;
   });
-  return count + 1;
+  return count;
 }
 async function addBooking({ name, igHandle, threadsHandle, date, time, source }) {
-  const visitNo = await nextVisitNo(igHandle, threadsHandle);
+  // foodie自己(未登入)冇讀取權限，唔可以喺呢步計「第幾次到訪」，
+  // 淨係店員/管理員開位先即刻計；自約嘅留返店員打勾「已到」嗰陣先計
+  let visitNo = null;
+  if (source === "staff") {
+    visitNo = (await countArrivedFor(igHandle, threadsHandle)) + 1;
+  }
   return addDoc(bookingsCol, {
     name, igHandle: igHandle || "", threadsHandle: threadsHandle || "",
     date, time, source, status: "pending", visitNo,
@@ -87,8 +97,13 @@ async function addBooking({ name, igHandle, threadsHandle, date, time, source })
     createdAt: serverTimestamp(),
   });
 }
-function toggleArrived(id, currentStatus) {
-  return updateDoc(doc(db, "bookings", id), { status: currentStatus === "arrived" ? "pending" : "arrived" });
+async function toggleArrived(id, currentStatus, booking) {
+  const willArrive = currentStatus !== "arrived";
+  const updates = { status: willArrive ? "arrived" : "pending" };
+  if (willArrive && (booking?.visitNo === null || booking?.visitNo === undefined)) {
+    updates.visitNo = (await countArrivedFor(booking?.igHandle, booking?.threadsHandle)) + 1;
+  }
+  return updateDoc(doc(db, "bookings", id), updates);
 }
 function updateEffectiveness(id, phase, field, value, existingPhaseObj) {
   const phaseObj = existingPhaseObj || { views: 0, likes: 0, comments: 0 };
@@ -280,14 +295,14 @@ function Schedule() {
           <div className="space-y-2">
             {grouped[date].map((b) => (
               <div key={b.id} className={`flex items-center gap-3 rounded-md border p-3 bg-white/60 ${b.status === "arrived" ? "border-[#8a9a3c]" : "border-[#C9A66B]"}`}>
-                <button onClick={() => window.FB.toggleArrived(b.id, b.status)} className="shrink-0 text-2xl leading-none">{b.status === "arrived" ? "✅" : "⭕"}</button>
+                <button onClick={() => window.FB.toggleArrived(b.id, b.status, b)} className="shrink-0 text-2xl leading-none">{b.status === "arrived" ? "✅" : "⭕"}</button>
                 <div className="font-bold text-sm w-14 shrink-0">⏰ {b.time}</div>
                 <div className="flex-1 min-w-0">
                   <div className="font-bold text-sm truncate">{b.name}</div>
                   <div className="text-xs text-stone-500 flex items-center gap-2 flex-wrap">
                     {b.igHandle && <span>📷{b.igHandle}</span>}
                     {b.threadsHandle && <span>@{b.threadsHandle}</span>}
-                    <span>第{b.visitNo}次</span>
+                    <span>{b.visitNo ? `第${b.visitNo}次` : "到步後自動計"}</span>
                   </div>
                 </div>
                 <Seal tone={b.source === "self" ? "gold" : "ink"}>{b.source === "self" ? "自約" : "店員開位"}</Seal>
@@ -326,7 +341,7 @@ function LogTab() {
               </div>
             </div>
             <div className="flex items-center gap-2 shrink-0">
-              <Seal tone="gold">第 {b.visitNo} 次</Seal>
+              <Seal tone="gold">{b.visitNo ? `第 ${b.visitNo} 次` : "未到步"}</Seal>
               <Seal tone={b.status === "arrived" ? "ink" : "vermilion"}>{b.status === "arrived" ? "已到" : "未到"}</Seal>
             </div>
           </div>
@@ -370,46 +385,114 @@ function Effectiveness() {
   );
 }
 
-function Monthly() {
+function ymd(d) { return d.toISOString().slice(0, 10); }
+function addDays(dateStr, n) {
+  const d = new Date(dateStr + "T00:00:00");
+  d.setDate(d.getDate() + n);
+  return ymd(d);
+}
+function startOfMonth(dateStr) { return dateStr.slice(0, 7) + "-01"; }
+function endOfMonth(dateStr) {
+  const d = new Date(dateStr.slice(0, 7) + "-01T00:00:00");
+  d.setMonth(d.getMonth() + 1);
+  d.setDate(0);
+  return ymd(d);
+}
+function prevMonthDate(dateStr) {
+  const d = new Date(dateStr.slice(0, 7) + "-01T00:00:00");
+  d.setMonth(d.getMonth() - 1);
+  return ymd(d);
+}
+
+function StatBox({ label, value, deltaLabel, deltaValue, deltaIsPct }) {
+  const hasDelta = deltaValue !== null && deltaValue !== undefined;
+  const up = hasDelta && deltaValue > 0;
+  const flat = hasDelta && deltaValue === 0;
+  return (
+    <div className="rounded-md border border-[#C9A66B] bg-white/70 p-4 text-center">
+      <div className="text-2xl font-extrabold text-[#1C1917]">{value}</div>
+      <div className="text-[11px] text-stone-500 mb-1">{label}</div>
+      {hasDelta && (
+        <div className={`text-xs font-semibold ${flat ? "text-stone-400" : up ? "text-[#8a9a3c]" : "text-[#B8262A]"}`}>
+          {flat ? "同上期持平" : `${up ? "▲" : "▼"} ${up ? "+" : ""}${deltaValue.toLocaleString()}${deltaIsPct ? "%" : ""} 對比${deltaLabel}`}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Stats() {
   const [bookings, setBookings] = useState([]);
   const [daily, setDaily] = useState([]);
+  const [period, setPeriod] = useState("week"); // week | month | custom
+  const today = ymd(new Date());
+  const [customStart, setCustomStart] = useState(addDays(today, -6));
+  const [customEnd, setCustomEnd] = useState(today);
+
   useEffect(() => window.FB.listenBookings(setBookings), []);
   useEffect(() => window.FB.listenDaily(setDaily), []);
 
-  const months = {};
-  bookings.filter((b) => b.status === "arrived").forEach((b) => {
-    const m = b.date.slice(0, 7);
-    months[m] = months[m] || { foodieCount: 0 };
-    months[m].foodieCount += 1;
-  });
-  daily.forEach((d) => {
-    const m = d.date.slice(0, 7);
-    months[m] = months[m] || { foodieCount: 0 };
-    if (!months[m].first || d.date < months[m].first.date) months[m].first = d;
-    if (!months[m].last || d.date > months[m].last.date) months[m].last = d;
-  });
-  const rows = Object.keys(months).sort().reverse().map((m) => {
-    const info = months[m];
-    const waGrowth = info.first && info.last ? (info.last.waMembers ?? 0) - (info.first.waMembers ?? 0) : null;
-    const igGrowth = info.first && info.last ? (info.last.igFollowers ?? 0) - (info.first.igFollowers ?? 0) : null;
-    return { month: m, foodieCount: info.foodieCount, waGrowth, igGrowth };
-  });
+  let start, end, prevStart, prevEnd, rangeLabel, prevLabel;
+  if (period === "week") {
+    start = addDays(today, -6); end = today;
+    prevEnd = addDays(start, -1); prevStart = addDays(prevEnd, -6);
+    rangeLabel = "本週(近7日)"; prevLabel = "上週";
+  } else if (period === "month") {
+    start = startOfMonth(today); end = today;
+    const pm = prevMonthDate(today);
+    prevStart = startOfMonth(pm); prevEnd = endOfMonth(pm);
+    rangeLabel = "本月"; prevLabel = "上月";
+  } else {
+    start = customStart; end = customEnd;
+    const len = Math.round((new Date(end) - new Date(start)) / 86400000) + 1;
+    prevEnd = addDays(start, -1); prevStart = addDays(prevEnd, -(len - 1));
+    rangeLabel = "自訂期間"; prevLabel = "上一個對等期間";
+  }
+
+  const inRange = (d, s, e) => d >= s && d <= e;
+  const foodieCount = (s, e) => bookings.filter((b) => b.status === "arrived" && inRange(b.date, s, e)).length;
+  const dailyInRange = (s, e) => daily.filter((d) => inRange(d.date, s, e)).sort((a, b) => a.date.localeCompare(b.date));
+  const sumRevenue = (s, e) => dailyInRange(s, e).reduce((sum, d) => sum + (d.revenue || 0), 0);
+  const growth = (s, e, field) => {
+    const rows = dailyInRange(s, e);
+    if (rows.length === 0) return null;
+    return (rows[rows.length - 1][field] ?? 0) - (rows[0][field] ?? 0);
+  };
+
+  const cur = {
+    foodie: foodieCount(start, end),
+    revenue: sumRevenue(start, end),
+    wa: growth(start, end, "waMembers"),
+    ig: growth(start, end, "igFollowers"),
+  };
+  const prev = {
+    foodie: foodieCount(prevStart, prevEnd),
+    revenue: sumRevenue(prevStart, prevEnd),
+  };
 
   return (
     <div>
-      <h2 className="text-xl font-extrabold flex items-center gap-2 mb-3">📈 每月統計</h2>
-      <p className="text-xs text-stone-500 mb-3">WhatsApp / IG-Threads 增長由「每日統計」自動計出嚟（嗰個月第一日 vs 最後一日）。</p>
-      <div className="space-y-3">
-        {rows.map((m) => (
-          <div key={m.month} className="rounded-md border border-[#C9A66B] bg-white/60 p-4 grid grid-cols-3 gap-3 text-center">
-            <div className="col-span-3 font-bold text-[#B8262A] mb-1">{m.month}</div>
-            <div><div className="text-2xl font-extrabold">{m.foodieCount}</div><div className="text-[11px] text-stone-500">食評家嚟訪</div></div>
-            <div><div className="text-2xl font-extrabold text-[#8a9a3c]">{m.waGrowth === null ? "—" : `${m.waGrowth >= 0 ? "+" : ""}${m.waGrowth}`}</div><div className="text-[11px] text-stone-500">WhatsApp 群組新增</div></div>
-            <div><div className="text-2xl font-extrabold text-[#8a9a3c]">{m.igGrowth === null ? "—" : `${m.igGrowth >= 0 ? "+" : ""}${m.igGrowth}`}</div><div className="text-[11px] text-stone-500">IG/Threads 新 Follower</div></div>
-          </div>
+      <h2 className="text-xl font-extrabold flex items-center gap-2 mb-3">📈 統計報表</h2>
+      <div className="flex gap-1 mb-4 bg-white/60 border border-[#C9A66B] rounded-md p-1 w-fit">
+        {[["week", "本週"], ["month", "本月"], ["custom", "自訂"]].map(([id, label]) => (
+          <button key={id} onClick={() => setPeriod(id)} className={`px-3 py-1.5 text-sm font-bold rounded-sm ${period === id ? "bg-[#1C1917] text-[#F3EBD9]" : "text-stone-500"}`}>{label}</button>
         ))}
-        {rows.length === 0 && <p className="text-sm text-stone-400">未有數據，記錄多幾日「每日統計」就會見到。</p>}
       </div>
+      {period === "custom" && (
+        <div className="flex items-center gap-2 mb-4 text-sm">
+          <input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} className="border border-[#C9A66B] rounded-sm px-2 py-1.5 bg-white" />
+          <span className="text-stone-400">至</span>
+          <input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} className="border border-[#C9A66B] rounded-sm px-2 py-1.5 bg-white" />
+        </div>
+      )}
+      <p className="text-xs text-stone-500 mb-3">{rangeLabel}（{fmtDate(start)} — {fmtDate(end)}），對比{prevLabel}（{fmtDate(prevStart)} — {fmtDate(prevEnd)}）</p>
+      <div className="grid grid-cols-2 gap-3">
+        <StatBox label="食評家到訪" value={cur.foodie} deltaValue={cur.foodie - prev.foodie} deltaLabel={prevLabel} />
+        <StatBox label="總營業額 (HK$)" value={cur.revenue.toLocaleString()} deltaValue={cur.revenue - prev.revenue} deltaLabel={prevLabel} />
+        <StatBox label="WhatsApp 群組增長" value={cur.wa === null ? "—" : `${cur.wa >= 0 ? "+" : ""}${cur.wa}`} />
+        <StatBox label="IG/Threads Follower 增長" value={cur.ig === null ? "—" : `${cur.ig >= 0 ? "+" : ""}${cur.ig}`} />
+      </div>
+      {daily.length === 0 && <p className="text-sm text-stone-400 mt-4">未有「每日統計」數據，先去嗰頁記錄多幾日。</p>}
     </div>
   );
 }
@@ -418,10 +501,10 @@ function Daily() {
   const [daily, setDaily] = useState([]);
   const [newDate, setNewDate] = useState(new Date().toISOString().slice(0, 10));
   useEffect(() => window.FB.listenDaily(setDaily), []);
-  const sorted = [...daily].sort((a, b) => a.date.localeCompare(b.date));
+  const sorted = [...daily].sort((a, b) => b.date.localeCompare(a.date)); // 最新在上
 
   const addToday = async () => {
-    if (sorted.find((d) => d.date === newDate)) return;
+    if (daily.find((d) => d.date === newDate)) return;
     await window.FB.upsertDaily(newDate, { revenue: 0, waMembers: 0, igFollowers: 0 });
   };
 
@@ -433,35 +516,47 @@ function Daily() {
     return <span className={`text-xs font-semibold ${up ? "text-[#8a9a3c]" : "text-[#B8262A]"}`}>{up ? "▲" : "▼"} {up ? "+" : ""}{diff.toLocaleString()}</span>;
   };
 
+  // sorted係新到舊，計delta要對返「前一日」＝陣列入面下一個(index+1)
+  const byDateAsc = [...daily].sort((a, b) => a.date.localeCompare(b.date));
+  const prevOf = (date) => {
+    const idx = byDateAsc.findIndex((d) => d.date === date);
+    return idx > 0 ? byDateAsc[idx - 1] : null;
+  };
+
   return (
     <div>
       <h2 className="text-xl font-extrabold flex items-center gap-2 mb-1">🛡️ 每日統計</h2>
       <p className="text-xs text-stone-500 mb-3">只有管理員睇到呢頁。改個欄位、離開input就自動存返。</p>
-      <div className="flex gap-2 mb-3">
+      <div className="flex gap-2 mb-4">
         <input type="date" value={newDate} onChange={(e) => setNewDate(e.target.value)} className="border border-[#C9A66B] rounded-sm px-2 py-1.5 text-sm bg-white" />
         <button onClick={addToday} className="flex items-center gap-1 bg-[#1C1917] text-white text-sm font-bold px-3 py-1.5 rounded-sm">＋ 新增一日</button>
       </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm border-collapse">
-          <thead><tr className="text-left text-xs text-stone-500 border-b border-[#C9A66B]">
-            <th className="py-2 pr-2">日期</th><th className="py-2 pr-2">營業額(HK$)</th><th className="py-2 pr-2">群組人數</th><th className="py-2 pr-2">Followers</th><th className="py-2 pr-2">升跌</th>
-          </tr></thead>
-          <tbody>
-            {sorted.map((row, idx) => {
-              const prev = sorted[idx - 1];
-              return (
-                <tr key={row.date} className="border-b border-stone-200">
-                  <td className="py-2 pr-2 font-bold whitespace-nowrap">{fmtDate(row.date)}</td>
-                  <td className="py-2 pr-2"><input type="number" defaultValue={row.revenue} onBlur={(e) => window.FB.upsertDaily(row.date, { revenue: Number(e.target.value) || 0 })} className="w-24 border border-stone-300 rounded-sm px-1 py-0.5 text-xs" /></td>
-                  <td className="py-2 pr-2"><input type="number" defaultValue={row.waMembers} onBlur={(e) => window.FB.upsertDaily(row.date, { waMembers: Number(e.target.value) || 0 })} className="w-20 border border-stone-300 rounded-sm px-1 py-0.5 text-xs" /></td>
-                  <td className="py-2 pr-2"><input type="number" defaultValue={row.igFollowers} onBlur={(e) => window.FB.upsertDaily(row.date, { igFollowers: Number(e.target.value) || 0 })} className="w-20 border border-stone-300 rounded-sm px-1 py-0.5 text-xs" /></td>
-                  <td className="py-2 pr-2 space-y-0.5"><Delta curr={row.revenue} prev={prev?.revenue} /><br /><Delta curr={row.igFollowers} prev={prev?.igFollowers} /></td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        {sorted.length === 0 && <p className="text-sm text-stone-400 mt-3">未有數據，撳「新增一日」開始記錄。</p>}
+      <div className="space-y-2">
+        {sorted.map((row) => {
+          const prev = prevOf(row.date);
+          return (
+            <div key={row.date} className="rounded-md border border-[#C9A66B] bg-white/70 p-3">
+              <div className="font-bold text-sm mb-2">{fmtDate(row.date)}</div>
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <div className="text-[11px] text-stone-500 mb-0.5">營業額(HK$)</div>
+                  <input type="number" defaultValue={row.revenue} onBlur={(e) => window.FB.upsertDaily(row.date, { revenue: Number(e.target.value) || 0 })} className="w-full border border-stone-300 rounded-sm px-1.5 py-1 text-xs" />
+                </div>
+                <div>
+                  <div className="text-[11px] text-stone-500 mb-0.5">群組人數</div>
+                  <input type="number" defaultValue={row.waMembers} onBlur={(e) => window.FB.upsertDaily(row.date, { waMembers: Number(e.target.value) || 0 })} className="w-full border border-stone-300 rounded-sm px-1.5 py-1 text-xs" />
+                  <div className="mt-1"><Delta curr={row.waMembers} prev={prev?.waMembers} /></div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-stone-500 mb-0.5">Followers</div>
+                  <input type="number" defaultValue={row.igFollowers} onBlur={(e) => window.FB.upsertDaily(row.date, { igFollowers: Number(e.target.value) || 0 })} className="w-full border border-stone-300 rounded-sm px-1.5 py-1 text-xs" />
+                  <div className="mt-1"><Delta curr={row.igFollowers} prev={prev?.igFollowers} /></div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+        {sorted.length === 0 && <p className="text-sm text-stone-400">未有數據，撳「新增一日」開始記錄。</p>}
       </div>
     </div>
   );
@@ -546,7 +641,7 @@ function MainApp() {
   ];
   if (role === "admin") tabs.push(
     { id: "eff", label: "成效追蹤", icon: "🔥" },
-    { id: "monthly", label: "月結統計", icon: "📈" },
+    { id: "monthly", label: "統計報表", icon: "📈" },
     { id: "daily", label: "每日統計", icon: "🛡️" },
     { id: "accounts", label: "帳號管理", icon: "👤" },
   );
@@ -577,7 +672,7 @@ function MainApp() {
         {tab === "schedule" && <Schedule />}
         {tab === "log" && <LogTab />}
         {tab === "eff" && role === "admin" && <Effectiveness />}
-        {tab === "monthly" && role === "admin" && <Monthly />}
+        {tab === "monthly" && role === "admin" && <Stats />}
         {tab === "daily" && role === "admin" && <Daily />}
         {tab === "accounts" && role === "admin" && <Accounts />}
       </main>
