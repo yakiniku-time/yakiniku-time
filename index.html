@@ -41,6 +41,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
   getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged,
+  setPersistence, browserLocalPersistence, indexedDBLocalPersistence,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, collection, doc, onSnapshot, addDoc, updateDoc, deleteDoc,
@@ -58,6 +59,12 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+// 明確用最持久嗰種登入狀態記錄方式，盡量做到「登入一次，之後唔使再login」
+try {
+  await setPersistence(auth, indexedDBLocalPersistence);
+} catch {
+  await setPersistence(auth, browserLocalPersistence);
+}
 
 const EMAIL_DOMAIN = "yakiniku-time.local";
 const usernameToEmail = (u) => `${u.trim().toLowerCase().replace(/\s+/g, "")}@${EMAIL_DOMAIN}`;
@@ -253,7 +260,7 @@ function Login() {
   );
 }
 
-function Schedule() {
+function Schedule({ readOnly }) {
   const [bookings, setBookings] = useState([]);
   const [showAdd, setShowAdd] = useState(false);
   const [nb, setNb] = useState({ name: "", igHandle: "", threadsHandle: "", date: ymd(new Date()), time: "18:00" });
@@ -271,10 +278,10 @@ function Schedule() {
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xl font-extrabold flex items-center gap-2">🔥 時間表</h2>
-        <button onClick={() => setShowAdd(true)} className="flex items-center gap-1 bg-[#B8262A] text-white text-sm font-bold px-3 py-1.5 rounded-sm">＋ 開位</button>
+        <h2 className="text-xl font-extrabold flex items-center gap-2">🔥 時間表{readOnly && <span className="text-xs font-normal text-stone-400">（唯讀）</span>}</h2>
+        {!readOnly && <button onClick={() => setShowAdd(true)} className="flex items-center gap-1 bg-[#B8262A] text-white text-sm font-bold px-3 py-1.5 rounded-sm">＋ 開位</button>}
       </div>
-      {showAdd && (
+      {!readOnly && showAdd && (
         <div className="mb-4 bg-white/70 border border-[#C9A66B] rounded-md p-3 grid grid-cols-2 gap-2">
           <input placeholder="食評家名" value={nb.name} onChange={(e) => setNb({ ...nb, name: e.target.value })} className="col-span-2 border border-[#C9A66B] rounded-sm px-2 py-1.5 text-sm bg-white" />
           <input placeholder="@ IG 帳號" value={nb.igHandle} onChange={(e) => setNb({ ...nb, igHandle: e.target.value })} className="border border-[#C9A66B] rounded-sm px-2 py-1.5 text-sm bg-white" />
@@ -296,7 +303,11 @@ function Schedule() {
           <div className="space-y-2">
             {grouped[date].map((b) => (
               <div key={b.id} className={`flex items-center gap-3 rounded-md border p-3 bg-white/60 ${b.status === "arrived" ? "border-[#8a9a3c]" : "border-[#C9A66B]"}`}>
-                <button onClick={() => window.FB.toggleArrived(b.id, b.status, b)} className="shrink-0 text-2xl leading-none">{b.status === "arrived" ? "✅" : "⭕"}</button>
+                {readOnly ? (
+                  <span className="shrink-0 text-2xl leading-none">{b.status === "arrived" ? "✅" : "⭕"}</span>
+                ) : (
+                  <button onClick={() => window.FB.toggleArrived(b.id, b.status, b)} className="shrink-0 text-2xl leading-none">{b.status === "arrived" ? "✅" : "⭕"}</button>
+                )}
                 <div className="font-bold text-sm w-14 shrink-0">⏰ {b.time}</div>
                 <div className="flex-1 min-w-0">
                   <div className="font-bold text-sm truncate">{b.name}</div>
@@ -353,7 +364,7 @@ function LogTab() {
   );
 }
 
-function Effectiveness() {
+function Effectiveness({ readOnly }) {
   const [bookings, setBookings] = useState([]);
   const [showAdd, setShowAdd] = useState(false);
   const [nb, setNb] = useState({ name: "", igHandle: "", threadsHandle: "", date: ymd(new Date()) });
@@ -370,11 +381,11 @@ function Effectiveness() {
   return (
     <div>
       <div className="flex items-center justify-between mb-3">
-        <h2 className="text-xl font-extrabold flex items-center gap-2">🔥 成效追蹤（第3日 / 第7日）</h2>
-        <button onClick={() => setShowAdd(true)} className="flex items-center gap-1 bg-[#B8262A] text-white text-xs font-bold px-2.5 py-1.5 rounded-sm whitespace-nowrap">＋ 新增(冇打卡)</button>
+        <h2 className="text-xl font-extrabold flex items-center gap-2">🔥 成效追蹤（第3日 / 第7日）{readOnly && <span className="text-xs font-normal text-stone-400">（唯讀）</span>}</h2>
+        {!readOnly && <button onClick={() => setShowAdd(true)} className="flex items-center gap-1 bg-[#B8262A] text-white text-xs font-bold px-2.5 py-1.5 rounded-sm whitespace-nowrap">＋ 新增(冇打卡)</button>}
       </div>
-      <p className="text-xs text-stone-500 mb-3">有啲食評家冇經時間表/QR登記都嚟過，可以喺度手動加返做成效追蹤。</p>
-      {showAdd && (
+      {!readOnly && <p className="text-xs text-stone-500 mb-3">有啲食評家冇經時間表/QR登記都嚟過，可以喺度手動加返做成效追蹤。</p>}
+      {!readOnly && showAdd && (
         <div className="mb-4 bg-white/70 border border-[#C9A66B] rounded-md p-3 grid grid-cols-2 gap-2">
           <input placeholder="食評家名" value={nb.name} onChange={(e) => setNb({ ...nb, name: e.target.value })} className="col-span-2 border border-[#C9A66B] rounded-sm px-2 py-1.5 text-sm bg-white" />
           <input placeholder="@ IG 帳號" value={nb.igHandle} onChange={(e) => setNb({ ...nb, igHandle: e.target.value })} className="border border-[#C9A66B] rounded-sm px-2 py-1.5 text-sm bg-white" />
@@ -397,7 +408,7 @@ function Effectiveness() {
                   {["views", "likes", "comments"].map((f) => (
                     <div key={f} className="flex items-center justify-between mb-1">
                       <span className="text-[11px] text-stone-500">{f === "views" ? "觀看" : f === "likes" ? "讚好" : "留言"}</span>
-                      <input type="number" defaultValue={b.eff?.[phase]?.[f] ?? ""} onBlur={(e) => window.FB.updateEffectiveness(b.id, phase, f, e.target.value, b.eff?.[phase])} className="w-20 text-right text-xs border border-stone-300 rounded-sm px-1 py-0.5" />
+                      <input type="number" disabled={readOnly} defaultValue={b.eff?.[phase]?.[f] ?? ""} onBlur={(e) => window.FB.updateEffectiveness(b.id, phase, f, e.target.value, b.eff?.[phase])} className="w-20 text-right text-xs border border-stone-300 rounded-sm px-1 py-0.5 disabled:bg-stone-100 disabled:text-stone-500" />
                     </div>
                   ))}
                 </div>
@@ -540,7 +551,7 @@ function Stats() {
   );
 }
 
-function Daily() {
+function Daily({ readOnly }) {
   const [daily, setDaily] = useState([]);
   const [newDate, setNewDate] = useState(ymd(new Date()));
   useEffect(() => window.FB.listenDaily(setDaily), []);
@@ -568,12 +579,14 @@ function Daily() {
 
   return (
     <div>
-      <h2 className="text-xl font-extrabold flex items-center gap-2 mb-1">🛡️ 每日統計</h2>
-      <p className="text-xs text-stone-500 mb-3">只有管理員睇到呢頁。改個欄位、離開input就自動存返。</p>
-      <div className="flex gap-2 mb-4">
-        <input type="date" value={newDate} onChange={(e) => setNewDate(e.target.value)} className="border border-[#C9A66B] rounded-sm px-2 py-1.5 text-sm bg-white" />
-        <button onClick={addToday} className="flex items-center gap-1 bg-[#1C1917] text-white text-sm font-bold px-3 py-1.5 rounded-sm">＋ 新增一日</button>
-      </div>
+      <h2 className="text-xl font-extrabold flex items-center gap-2 mb-1">🛡️ 每日統計{readOnly && <span className="text-xs font-normal text-stone-400">（唯讀）</span>}</h2>
+      <p className="text-xs text-stone-500 mb-3">{readOnly ? "淨係睇得，唔可以修改。" : "只有管理員睇到呢頁。改個欄位、離開input就自動存返。"}</p>
+      {!readOnly && (
+        <div className="flex gap-2 mb-4">
+          <input type="date" value={newDate} onChange={(e) => setNewDate(e.target.value)} className="border border-[#C9A66B] rounded-sm px-2 py-1.5 text-sm bg-white" />
+          <button onClick={addToday} className="flex items-center gap-1 bg-[#1C1917] text-white text-sm font-bold px-3 py-1.5 rounded-sm">＋ 新增一日</button>
+        </div>
+      )}
       <div className="space-y-2">
         {sorted.map((row) => {
           const prev = prevOf(row.date);
@@ -583,16 +596,16 @@ function Daily() {
               <div className="grid grid-cols-3 gap-2">
                 <div>
                   <div className="text-[11px] text-stone-500 mb-0.5">營業額(HK$)</div>
-                  <input type="number" defaultValue={row.revenue} onBlur={(e) => window.FB.upsertDaily(row.date, { revenue: Number(e.target.value) || 0 })} className="w-full border border-stone-300 rounded-sm px-1.5 py-1 text-xs" />
+                  <input type="number" disabled={readOnly} defaultValue={row.revenue} onBlur={(e) => window.FB.upsertDaily(row.date, { revenue: Number(e.target.value) || 0 })} className="w-full border border-stone-300 rounded-sm px-1.5 py-1 text-xs disabled:bg-stone-100 disabled:text-stone-500" />
                 </div>
                 <div>
                   <div className="text-[11px] text-stone-500 mb-0.5">群組人數</div>
-                  <input type="number" defaultValue={row.waMembers} onBlur={(e) => window.FB.upsertDaily(row.date, { waMembers: Number(e.target.value) || 0 })} className="w-full border border-stone-300 rounded-sm px-1.5 py-1 text-xs" />
+                  <input type="number" disabled={readOnly} defaultValue={row.waMembers} onBlur={(e) => window.FB.upsertDaily(row.date, { waMembers: Number(e.target.value) || 0 })} className="w-full border border-stone-300 rounded-sm px-1.5 py-1 text-xs disabled:bg-stone-100 disabled:text-stone-500" />
                   <div className="mt-1"><Delta curr={row.waMembers} prev={prev?.waMembers} /></div>
                 </div>
                 <div>
                   <div className="text-[11px] text-stone-500 mb-0.5">Followers</div>
-                  <input type="number" defaultValue={row.igFollowers} onBlur={(e) => window.FB.upsertDaily(row.date, { igFollowers: Number(e.target.value) || 0 })} className="w-full border border-stone-300 rounded-sm px-1.5 py-1 text-xs" />
+                  <input type="number" disabled={readOnly} defaultValue={row.igFollowers} onBlur={(e) => window.FB.upsertDaily(row.date, { igFollowers: Number(e.target.value) || 0 })} className="w-full border border-stone-300 rounded-sm px-1.5 py-1 text-xs disabled:bg-stone-100 disabled:text-stone-500" />
                   <div className="mt-1"><Delta curr={row.igFollowers} prev={prev?.igFollowers} /></div>
                 </div>
               </div>
@@ -627,7 +640,7 @@ function Accounts() {
         {accounts.map((a) => (
           <div key={a.email} className="flex items-center justify-between rounded-md border border-[#C9A66B] bg-white/60 p-3">
             <div className="flex items-center gap-2">
-              <Seal tone={a.role === "admin" ? "vermilion" : "ink"}>{a.role === "admin" ? "管理員" : "店員"}</Seal>
+              <Seal tone={a.role === "admin" ? "vermilion" : a.role === "viewer" ? "gold" : "ink"}>{a.role === "admin" ? "管理員" : a.role === "viewer" ? "老闆(唯讀)" : "店員"}</Seal>
               <div><div className="font-bold text-sm">{a.name}</div><div className="text-xs text-stone-500">帳號名：{window.FB.emailToUsername(a.email)}</div></div>
             </div>
             <button onClick={() => window.FB.removeAccountRole(a.email)} className="text-stone-400 hover:text-[#B8262A]">✕</button>
@@ -639,7 +652,7 @@ function Accounts() {
         <input placeholder="稱呼" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="border border-[#C9A66B] rounded-sm px-2 py-1.5 text-sm bg-white" />
         <div className="flex gap-2">
           <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} className="flex-1 border border-[#C9A66B] rounded-sm px-2 py-1.5 text-sm bg-white">
-            <option value="staff">店員</option><option value="admin">管理員</option>
+            <option value="staff">店員</option><option value="admin">管理員</option><option value="viewer">老闆(唯讀)</option>
           </select>
           <button onClick={add} className="flex items-center justify-center gap-1 bg-[#1C1917] text-white text-sm font-bold px-3 py-1.5 rounded-sm">＋ 新增</button>
         </div>
@@ -678,16 +691,20 @@ function MainApp() {
   );
 
   const role = account.role;
+  const readOnly = role === "viewer";
+  const canSeeReports = role === "admin" || role === "viewer";
   const tabs = [
     { id: "schedule", label: "時間表", icon: "📅" },
     { id: "log", label: "訪客記錄", icon: "🔍" },
   ];
-  if (role === "admin") tabs.push(
+  if (canSeeReports) tabs.push(
     { id: "eff", label: "成效追蹤", icon: "🔥" },
     { id: "monthly", label: "統計報表", icon: "📈" },
     { id: "daily", label: "每日統計", icon: "🛡️" },
-    { id: "accounts", label: "帳號管理", icon: "👤" },
   );
+  if (role === "admin") tabs.push({ id: "accounts", label: "帳號管理", icon: "👤" });
+
+  const roleLabel = role === "admin" ? "管理員" : role === "viewer" ? "老闆(唯讀)" : "店員";
 
   return (
     <div className="min-h-screen bg-[#F3EBD9] text-[#211B14]">
@@ -699,7 +716,7 @@ function MainApp() {
             <p className="text-[11px] text-[#C9A66B] tracking-widest uppercase">Yakiniku Time · KOL Manager</p></div>
           </div>
           <div className="flex items-center gap-3">
-            <span className="text-xs text-[#C9A66B] hidden sm:inline">{account.name} · {role === "admin" ? "管理員" : "店員"}</span>
+            <span className="text-xs text-[#C9A66B] hidden sm:inline">{account.name} · {roleLabel}</span>
             <button onClick={() => window.FB.signOut(window.FB.auth)} className="text-xs font-bold text-[#F3EBD9] border border-[#C9A66B] rounded-sm px-2 py-1.5">登出</button>
           </div>
         </div>
@@ -712,11 +729,11 @@ function MainApp() {
         </nav>
       </header>
       <main className="max-w-5xl mx-auto px-4 py-5 pb-16">
-        {tab === "schedule" && <Schedule />}
+        {tab === "schedule" && <Schedule readOnly={readOnly} />}
         {tab === "log" && <LogTab />}
-        {tab === "eff" && role === "admin" && <Effectiveness />}
-        {tab === "monthly" && role === "admin" && <Stats />}
-        {tab === "daily" && role === "admin" && <Daily />}
+        {tab === "eff" && canSeeReports && <Effectiveness readOnly={readOnly} />}
+        {tab === "monthly" && canSeeReports && <Stats />}
+        {tab === "daily" && canSeeReports && <Daily readOnly={readOnly} />}
         {tab === "accounts" && role === "admin" && <Accounts />}
       </main>
       <footer className="border-t border-[#C9A66B] py-3 text-center text-[11px] text-stone-500">燒肉時刻 · 內部管理系統</footer>
