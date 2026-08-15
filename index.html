@@ -517,8 +517,16 @@ function MainApp() {
 
   useEffect(() => window.FB.onAuthStateChanged(window.FB.auth, async (user) => {
     setAuthUser(user || null);
-    if (user?.email) setAccount(await window.FB.getAccountRole(user.email));
-    else setAccount(null);
+    if (user?.email) {
+      try {
+        setAccount(await window.FB.getAccountRole(user.email));
+      } catch (err) {
+        console.error("讀取帳號角色失敗:", err);
+        setAccount(null);
+      }
+    } else {
+      setAccount(null);
+    }
   }), []);
 
   if (authUser === undefined) return <div className="min-h-screen flex items-center justify-center bg-[#F3EBD9] text-stone-500">載入緊…</div>;
