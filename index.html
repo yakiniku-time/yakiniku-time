@@ -83,16 +83,17 @@ async function countArrivedFor(igHandle, threadsHandle) {
   });
   return count;
 }
-async function addBooking({ name, igHandle, threadsHandle, date, time, source }) {
+async function addBooking({ name, igHandle, threadsHandle, date, time, source, status }) {
   // foodie自己(未登入)冇讀取權限，唔可以喺呢步計「第幾次到訪」，
   // 淨係店員/管理員開位先即刻計；自約嘅留返店員打勾「已到」嗰陣先計
   let visitNo = null;
+  const initialStatus = status || "pending";
   if (source === "staff") {
     visitNo = (await countArrivedFor(igHandle, threadsHandle)) + 1;
   }
   return addDoc(bookingsCol, {
     name, igHandle: igHandle || "", threadsHandle: threadsHandle || "",
-    date, time, source, status: "pending", visitNo,
+    date, time: time || "", source, status: initialStatus, visitNo,
     eff: { d3: null, d7: null },
     createdAt: serverTimestamp(),
   });
@@ -186,7 +187,7 @@ function Seal({ children, tone = "vermilion" }) {
 }
 
 function PublicBooking() {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = ymd(new Date());
   const [form, setForm] = useState({ name: "", igHandle: "", threadsHandle: "", date: today, time: "18:00" });
   const [done, setDone] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -255,7 +256,7 @@ function Login() {
 function Schedule() {
   const [bookings, setBookings] = useState([]);
   const [showAdd, setShowAdd] = useState(false);
-  const [nb, setNb] = useState({ name: "", igHandle: "", threadsHandle: "", date: new Date().toISOString().slice(0, 10), time: "18:00" });
+  const [nb, setNb] = useState({ name: "", igHandle: "", threadsHandle: "", date: ymd(new Date()), time: "18:00" });
 
   useEffect(() => window.FB.listenBookings(setBookings), []);
   const grouped = bookings.reduce((acc, b) => { (acc[b.date] = acc[b.date] || []).push(b); return acc; }, {});
@@ -263,7 +264,7 @@ function Schedule() {
   const submitAdd = async () => {
     if (!nb.name) return;
     await window.FB.addBooking({ ...nb, source: "staff" });
-    setNb({ name: "", igHandle: "", threadsHandle: "", date: new Date().toISOString().slice(0, 10), time: "18:00" });
+    setNb({ name: "", igHandle: "", threadsHandle: "", date: ymd(new Date()), time: "18:00" });
     setShowAdd(false);
   };
 
@@ -354,12 +355,37 @@ function LogTab() {
 
 function Effectiveness() {
   const [bookings, setBookings] = useState([]);
+  const [showAdd, setShowAdd] = useState(false);
+  const [nb, setNb] = useState({ name: "", igHandle: "", threadsHandle: "", date: ymd(new Date()) });
   useEffect(() => window.FB.listenBookings(setBookings), []);
   const arrived = bookings.filter((b) => b.status === "arrived").sort((a, b) => b.date.localeCompare(a.date));
 
+  const submitManual = async () => {
+    if (!nb.name) return;
+    await window.FB.addBooking({ ...nb, source: "staff", status: "arrived" });
+    setNb({ name: "", igHandle: "", threadsHandle: "", date: ymd(new Date()) });
+    setShowAdd(false);
+  };
+
   return (
     <div>
-      <h2 className="text-xl font-extrabold flex items-center gap-2 mb-3">🔥 成效追蹤（第3日 / 第7日）</h2>
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-xl font-extrabold flex items-center gap-2">🔥 成效追蹤（第3日 / 第7日）</h2>
+        <button onClick={() => setShowAdd(true)} className="flex items-center gap-1 bg-[#B8262A] text-white text-xs font-bold px-2.5 py-1.5 rounded-sm whitespace-nowrap">＋ 新增(冇打卡)</button>
+      </div>
+      <p className="text-xs text-stone-500 mb-3">有啲食評家冇經時間表/QR登記都嚟過，可以喺度手動加返做成效追蹤。</p>
+      {showAdd && (
+        <div className="mb-4 bg-white/70 border border-[#C9A66B] rounded-md p-3 grid grid-cols-2 gap-2">
+          <input placeholder="食評家名" value={nb.name} onChange={(e) => setNb({ ...nb, name: e.target.value })} className="col-span-2 border border-[#C9A66B] rounded-sm px-2 py-1.5 text-sm bg-white" />
+          <input placeholder="@ IG 帳號" value={nb.igHandle} onChange={(e) => setNb({ ...nb, igHandle: e.target.value })} className="border border-[#C9A66B] rounded-sm px-2 py-1.5 text-sm bg-white" />
+          <input placeholder="@ Threads 帳號" value={nb.threadsHandle} onChange={(e) => setNb({ ...nb, threadsHandle: e.target.value })} className="border border-[#C9A66B] rounded-sm px-2 py-1.5 text-sm bg-white" />
+          <input type="date" value={nb.date} onChange={(e) => setNb({ ...nb, date: e.target.value })} className="col-span-2 border border-[#C9A66B] rounded-sm px-2 py-1.5 text-sm bg-white" />
+          <div className="col-span-2 flex gap-2 justify-end mt-1">
+            <button onClick={() => setShowAdd(false)} className="text-xs px-3 py-1.5 rounded-sm border border-stone-400 text-stone-600">取消</button>
+            <button onClick={submitManual} className="text-xs px-3 py-1.5 rounded-sm bg-[#1C1917] text-white font-bold">加入</button>
+          </div>
+        </div>
+      )}
       <div className="space-y-4">
         {arrived.map((b) => (
           <div key={b.id} className="rounded-md border border-[#C9A66B] bg-white/60 p-3">
@@ -385,7 +411,13 @@ function Effectiveness() {
   );
 }
 
-function ymd(d) { return d.toISOString().slice(0, 10); }
+// 用返本地日曆日期計，唔好用toISOString(佢會換做UTC，喺香港時區會做成日期錯咗一日/一個月)
+function ymd(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 function addDays(dateStr, n) {
   const d = new Date(dateStr + "T00:00:00");
   d.setDate(d.getDate() + n);
@@ -401,6 +433,17 @@ function endOfMonth(dateStr) {
 function prevMonthDate(dateStr) {
   const d = new Date(dateStr.slice(0, 7) + "-01T00:00:00");
   d.setMonth(d.getMonth() - 1);
+  return ymd(d);
+}
+// 週日 = 一週開始，週六 = 一週結束
+function startOfWeek(dateStr) {
+  const d = new Date(dateStr + "T00:00:00");
+  d.setDate(d.getDate() - d.getDay());
+  return ymd(d);
+}
+function endOfWeek(dateStr) {
+  const d = new Date(dateStr + "T00:00:00");
+  d.setDate(d.getDate() + (6 - d.getDay()));
   return ymd(d);
 }
 
@@ -434,9 +477,9 @@ function Stats() {
 
   let start, end, prevStart, prevEnd, rangeLabel, prevLabel;
   if (period === "week") {
-    start = addDays(today, -6); end = today;
+    start = startOfWeek(today); end = endOfWeek(today);
     prevEnd = addDays(start, -1); prevStart = addDays(prevEnd, -6);
-    rangeLabel = "本週(近7日)"; prevLabel = "上週";
+    rangeLabel = "本週(日至六)"; prevLabel = "上週";
   } else if (period === "month") {
     start = startOfMonth(today); end = today;
     const pm = prevMonthDate(today);
@@ -499,7 +542,7 @@ function Stats() {
 
 function Daily() {
   const [daily, setDaily] = useState([]);
-  const [newDate, setNewDate] = useState(new Date().toISOString().slice(0, 10));
+  const [newDate, setNewDate] = useState(ymd(new Date()));
   useEffect(() => window.FB.listenDaily(setDaily), []);
   const sorted = [...daily].sort((a, b) => b.date.localeCompare(a.date)); // 最新在上
 
