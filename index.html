@@ -142,12 +142,34 @@ async function getAccountRole(email) {
   return snap.exists() ? snap.data() : null;
 }
 
+/* ---------------- 生日優惠 ---------------- */
+const birthdayCol = collection(db, "birthdayFans");
+function listenBirthdayFans(cb) {
+  return onSnapshot(birthdayCol, (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+  }, (err) => console.error("listenBirthdayFans error:", err));
+}
+function addBirthdayFan({ name, phone, birthday, source }) {
+  return addDoc(birthdayCol, {
+    name, phone: phone || "", birthday, source: source || "staff",
+    redeemedYear: null,
+    createdAt: serverTimestamp(),
+  });
+}
+function setBirthdayRedeemed(id, year) {
+  return updateDoc(doc(db, "birthdayFans", id), { redeemedYear: year });
+}
+function clearBirthdayRedeemed(id) {
+  return updateDoc(doc(db, "birthdayFans", id), { redeemedYear: null });
+}
+
 window.FB = {
   auth, usernameToEmail, emailToUsername,
   signInWithEmailAndPassword, signOut, onAuthStateChanged,
   listenBookings, addBooking, toggleArrived, updateEffectiveness,
   listenDaily, upsertDaily,
   listenAccounts, addAccountRole, removeAccountRole, getAccountRole,
+  listenBirthdayFans, addBirthdayFan, setBirthdayRedeemed, clearBirthdayRedeemed,
 };
 window.__fbReady = true;
 window.dispatchEvent(new Event("fbready"));
@@ -226,6 +248,46 @@ function PublicBooking() {
         <div className="flex gap-2">
           <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="flex-1 border border-[#C9A66B] rounded-sm px-3 py-2 text-sm bg-white" />
           <input type="time" value={form.time} onChange={(e) => setForm({ ...form, time: e.target.value })} className="flex-1 border border-[#C9A66B] rounded-sm px-3 py-2 text-sm bg-white" />
+        </div>
+        {error && <p className="text-xs text-[#B8262A]">{error}</p>}
+        <button type="submit" disabled={saving} className="w-full bg-[#B8262A] text-white font-bold py-2 rounded-sm disabled:opacity-50">{saving ? "提交緊…" : "登記"}</button>
+      </form>
+    </div>
+  );
+}
+
+function PublicBirthday() {
+  const [form, setForm] = useState({ name: "", phone: "", birthday: "" });
+  const [done, setDone] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!form.name || !form.phone || !form.birthday) { setError("請填晒姓名、電話同生日日期"); return; }
+    setError(""); setSaving(true);
+    try { await window.FB.addBirthdayFan({ ...form, source: "self" }); setDone(true); }
+    catch { setError("提交失敗，唔該叫店員幫手手動登記"); }
+    finally { setSaving(false); }
+  };
+
+  if (done) return (
+    <div className="min-h-screen flex items-center justify-center bg-[#F3EBD9] px-4 text-center">
+      <div><LogoMark size={56} /><p className="mt-4 font-bold text-lg">登記成功！🎂</p>
+      <p className="text-sm text-stone-500 mt-1">生日前後一日（共3日）嚟食,同店員講返你個名就得。</p></div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-[#F3EBD9] px-4">
+      <form onSubmit={submit} className="w-full max-w-sm bg-white/70 border border-[#C9A66B] rounded-md p-6 space-y-3">
+        <div className="flex flex-col items-center gap-2 mb-2"><LogoMark size={56} /><h1 className="font-extrabold text-lg">🎂 生日優惠登記</h1>
+        <p className="text-xs text-stone-500 text-center">生日前後一日,共3日都可以嚟食</p></div>
+        <input placeholder="姓名" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="w-full border border-[#C9A66B] rounded-sm px-3 py-2 text-sm bg-white" />
+        <input placeholder="聯絡電話" inputMode="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="w-full border border-[#C9A66B] rounded-sm px-3 py-2 text-sm bg-white" />
+        <div>
+          <label className="text-xs text-stone-500 mb-1 block">出生日期</label>
+          <input type="date" value={form.birthday} onChange={(e) => setForm({ ...form, birthday: e.target.value })} className="w-full border border-[#C9A66B] rounded-sm px-3 py-2 text-sm bg-white" />
         </div>
         {error && <p className="text-xs text-[#B8262A]">{error}</p>}
         <button type="submit" disabled={saving} className="w-full bg-[#B8262A] text-white font-bold py-2 rounded-sm disabled:opacity-50">{saving ? "提交緊…" : "登記"}</button>
@@ -677,6 +739,112 @@ function Accounts() {
   );
 }
 
+function birthdayWindowInfo(birthday, todayStr) {
+  // 揾返「今年/去年/明年」呢個生日對應嘅日期，邊個窗口(前後一日)蓋住咗今日就用邊個
+  const md = birthday.slice(5); // MM-DD
+  const y = Number(todayStr.slice(0, 4));
+  const candidates = [y - 1, y, y + 1].map((yr) => `${yr}-${md}`);
+  let active = null, upcoming = null;
+  for (const occ of candidates) {
+    const start = addDays(occ, -1), end = addDays(occ, 1);
+    if (todayStr >= start && todayStr <= end) { active = { occ, start, end, year: occ.slice(0, 4) }; break; }
+  }
+  if (!active) {
+    // 揾最近一個未到嘅窗口
+    const future = candidates
+      .map((occ) => ({ occ, start: addDays(occ, -1), end: addDays(occ, 1), year: occ.slice(0, 4) }))
+      .filter((w) => w.start > todayStr)
+      .sort((a, b) => a.start.localeCompare(b.start));
+    upcoming = future[0] || null;
+  }
+  return { active, upcoming };
+}
+
+function BirthdayOffer({ readOnly }) {
+  const [fans, setFans] = useState([]);
+  const [search, setSearch] = useState("");
+  const [showAdd, setShowAdd] = useState(false);
+  const [nf, setNf] = useState({ name: "", phone: "", birthday: "" });
+  useEffect(() => window.FB.listenBirthdayFans(setFans), []);
+
+  const t = ymd(new Date());
+  const enriched = fans.map((f) => ({ ...f, win: birthdayWindowInfo(f.birthday, t) }));
+  const filtered = enriched.filter((f) => {
+    const s = search.toLowerCase();
+    return f.name?.toLowerCase().includes(s) || f.phone?.includes(s);
+  }).sort((a, b) => {
+    // 今日啱用嘅排最前
+    const aActive = !!a.win.active, bActive = !!b.win.active;
+    if (aActive !== bActive) return aActive ? -1 : 1;
+    return (a.birthday || "").localeCompare(b.birthday || "");
+  });
+
+  const submitAdd = async () => {
+    if (!nf.name || !nf.phone || !nf.birthday) return;
+    await window.FB.addBirthdayFan({ ...nf, source: "staff" });
+    setNf({ name: "", phone: "", birthday: "" });
+    setShowAdd(false);
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-xl font-extrabold flex items-center gap-2">🎂 生日優惠</h2>
+        {!readOnly && <button onClick={() => setShowAdd(true)} className="flex items-center gap-1 bg-[#B8262A] text-white text-xs font-bold px-2.5 py-1.5 rounded-sm whitespace-nowrap">＋ 新增</button>}
+      </div>
+      <p className="text-xs text-stone-500 mb-3">生日前後一日(共3日)都可以嚟食,可以搜尋姓名/電話。</p>
+
+      {!readOnly && showAdd && (
+        <div className="mb-4 bg-white/70 border border-[#C9A66B] rounded-md p-3 grid grid-cols-2 gap-2">
+          <input placeholder="姓名" value={nf.name} onChange={(e) => setNf({ ...nf, name: e.target.value })} className="col-span-2 border border-[#C9A66B] rounded-sm px-2 py-1.5 text-sm bg-white" />
+          <input placeholder="電話" value={nf.phone} onChange={(e) => setNf({ ...nf, phone: e.target.value })} className="border border-[#C9A66B] rounded-sm px-2 py-1.5 text-sm bg-white" />
+          <input type="date" value={nf.birthday} onChange={(e) => setNf({ ...nf, birthday: e.target.value })} className="border border-[#C9A66B] rounded-sm px-2 py-1.5 text-sm bg-white" />
+          <div className="col-span-2 flex gap-2 justify-end mt-1">
+            <button onClick={() => setShowAdd(false)} className="text-xs px-3 py-1.5 rounded-sm border border-stone-400 text-stone-600">取消</button>
+            <button onClick={submitAdd} className="text-xs px-3 py-1.5 rounded-sm bg-[#1C1917] text-white font-bold">加入</button>
+          </div>
+        </div>
+      )}
+
+      <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜尋姓名/電話" className="w-full mb-3 px-3 py-2 rounded-sm border border-[#C9A66B] bg-white text-sm" />
+
+      <div className="space-y-2">
+        {filtered.map((f) => {
+          const { active, upcoming } = f.win;
+          const redeemedThisWindow = active && f.redeemedYear === active.year;
+          return (
+            <div key={f.id} className={`rounded-md border p-3 bg-white/60 ${active ? "border-[#8a9a3c]" : "border-[#C9A66B]"}`}>
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="font-bold text-sm truncate">{f.name}</div>
+                  <div className="text-xs text-stone-500">{f.phone} · 生日 {f.birthday?.slice(5).replace("-", "/")}</div>
+                </div>
+                {active ? (
+                  <Seal tone={redeemedThisWindow ? "ink" : "vermilion"}>{redeemedThisWindow ? "已兌換" : "今日啱用"}</Seal>
+                ) : upcoming ? (
+                  <Seal tone="gold">下次 {fmtDate(upcoming.start)}</Seal>
+                ) : (
+                  <Seal tone="ink">—</Seal>
+                )}
+              </div>
+              {!readOnly && active && (
+                <div className="mt-2">
+                  {redeemedThisWindow ? (
+                    <button onClick={() => window.FB.clearBirthdayRedeemed(f.id)} className="text-xs px-3 py-1.5 rounded-sm border border-stone-400 text-stone-600">取消兌換</button>
+                  ) : (
+                    <button onClick={() => window.FB.setBirthdayRedeemed(f.id, active.year)} className="text-xs px-3 py-1.5 rounded-sm bg-[#1C1917] text-white font-bold">✓ 標記已兌換</button>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {filtered.length === 0 && <p className="text-sm text-stone-400">未有記錄。</p>}
+      </div>
+    </div>
+  );
+}
+
 function MainApp() {
   const [authUser, setAuthUser] = useState(undefined);
   const [account, setAccount] = useState(null);
@@ -712,6 +880,7 @@ function MainApp() {
   const tabs = [
     { id: "schedule", label: "時間表", icon: "📅" },
     { id: "log", label: "訪客記錄", icon: "🔍" },
+    { id: "birthday", label: "生日優惠", icon: "🎂" },
   ];
   if (canSeeReports) tabs.push(
     { id: "eff", label: "成效追蹤", icon: "🔥" },
@@ -747,6 +916,7 @@ function MainApp() {
       <main className="max-w-5xl mx-auto px-4 py-5 pb-16">
         {tab === "schedule" && <Schedule readOnly={readOnly} />}
         {tab === "log" && <LogTab />}
+        {tab === "birthday" && <BirthdayOffer readOnly={readOnly} />}
         {tab === "eff" && canSeeReports && <Effectiveness readOnly={readOnly} />}
         {tab === "monthly" && canSeeReports && <Stats />}
         {tab === "daily" && canSeeReports && <Daily readOnly={readOnly} />}
@@ -764,7 +934,9 @@ function Root() {
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
-  return hash.startsWith("#/book") ? <PublicBooking /> : <MainApp />;
+  if (hash.startsWith("#/book")) return <PublicBooking />;
+  if (hash.startsWith("#/birthday")) return <PublicBirthday />;
+  return <MainApp />;
 }
 
 function boot() {
