@@ -162,6 +162,12 @@ function setBirthdayRedeemed(id, year) {
 function clearBirthdayRedeemed(id) {
   return updateDoc(doc(db, "birthdayFans", id), { redeemedYear: null });
 }
+function setSpecialRedeemed(id, dateStr) {
+  return updateDoc(doc(db, "birthdayFans", id), { specialRedeemedAt: dateStr });
+}
+function clearSpecialRedeemed(id) {
+  return updateDoc(doc(db, "birthdayFans", id), { specialRedeemedAt: null });
+}
 
 window.FB = {
   auth, usernameToEmail, emailToUsername,
@@ -170,6 +176,7 @@ window.FB = {
   listenDaily, upsertDaily,
   listenAccounts, addAccountRole, removeAccountRole, getAccountRole,
   listenBirthdayFans, addBirthdayFan, setBirthdayRedeemed, clearBirthdayRedeemed,
+  setSpecialRedeemed, clearSpecialRedeemed,
 };
 window.__fbReady = true;
 window.dispatchEvent(new Event("fbready"));
@@ -256,15 +263,60 @@ function PublicBooking() {
   );
 }
 
+function daysInMonth(year, month) {
+  return new Date(Number(year), Number(month), 0).getDate();
+}
+
+function BirthdaySelect({ value, onChange }) {
+  const [y, m, d] = (value || "").split("-");
+  const curYear = new Date().getFullYear();
+  const years = [];
+  for (let yr = curYear; yr >= curYear - 100; yr--) years.push(yr);
+  const maxDay = y && m ? daysInMonth(y, m) : 31;
+
+  const update = (ny, nm, nd) => {
+    if (!ny || !nm || !nd) { onChange(""); return; }
+    const dd = Math.min(Number(nd), daysInMonth(ny, nm));
+    onChange(`${ny}-${String(nm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`);
+  };
+
+  const selCls = "border border-[#C9A66B] rounded-sm px-2 py-2 text-sm bg-white flex-1 min-w-0";
+  return (
+    <div className="flex gap-2">
+      <select value={y || ""} onChange={(e) => update(e.target.value, m, d)} className={selCls}>
+        <option value="">年</option>
+        {years.map((yr) => <option key={yr} value={yr}>{yr}</option>)}
+      </select>
+      <select value={m || ""} onChange={(e) => update(y, e.target.value, d)} className={selCls}>
+        <option value="">月</option>
+        {Array.from({ length: 12 }, (_, i) => i + 1).map((mo) => <option key={mo} value={mo}>{mo}月</option>)}
+      </select>
+      <select value={d || ""} onChange={(e) => update(y, m, e.target.value)} className={selCls}>
+        <option value="">日</option>
+        {Array.from({ length: maxDay }, (_, i) => i + 1).map((day) => <option key={day} value={day}>{day}</option>)}
+      </select>
+    </div>
+  );
+}
+
 function PublicBirthday() {
   const [form, setForm] = useState({ name: "", phone: "", birthday: "" });
   const [done, setDone] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
+  const isValidBirthday = (v) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+    const dt = new Date(v + "T00:00:00");
+    return !isNaN(dt.getTime()) && v <= ymd(new Date());
+  };
+
   const submit = async (e) => {
     e.preventDefault();
-    if (!form.name || !form.phone || !form.birthday) { setError("請填晒姓名、電話同生日日期"); return; }
+    if (!form.name || !form.phone || !isValidBirthday(form.birthday)) {
+      setError("請填晒姓名、電話，同揀齊年/月/日");
+      return;
+    }
     setError(""); setSaving(true);
     try { await window.FB.addBirthdayFan({ ...form, source: "self" }); setDone(true); }
     catch { setError("提交失敗，唔該叫店員幫手手動登記"); }
@@ -285,9 +337,9 @@ function PublicBirthday() {
         <p className="text-xs text-stone-500 text-center">生日前後一日,共3日都可以嚟食</p></div>
         <input placeholder="姓名" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="w-full border border-[#C9A66B] rounded-sm px-3 py-2 text-sm bg-white" />
         <input placeholder="聯絡電話" inputMode="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="w-full border border-[#C9A66B] rounded-sm px-3 py-2 text-sm bg-white" />
-        <div className="relative">
-          <input type="date" value={form.birthday} onChange={(e) => setForm({ ...form, birthday: e.target.value })} className="w-full border border-[#C9A66B] rounded-sm px-3 py-2 text-sm bg-white" />
-          {!form.birthday && <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-stone-400 pointer-events-none">出生日期</span>}
+        <div>
+          <div className="text-xs text-stone-500 mb-1">出生日期</div>
+          <BirthdaySelect value={form.birthday} onChange={(v) => setForm({ ...form, birthday: v })} />
         </div>
         {error && <p className="text-xs text-[#B8262A]">{error}</p>}
         <button type="submit" disabled={saving} className="w-full bg-[#B8262A] text-white font-bold py-2 rounded-sm disabled:opacity-50">{saving ? "提交緊…" : "登記"}</button>
@@ -780,6 +832,9 @@ function BirthdayOffer({ readOnly }) {
     return f.name?.toLowerCase().includes(s) || f.phone?.includes(s);
   }).sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
 
+  const totalRegistered = fans.length;
+  const totalRedeemed = enriched.filter((f) => (f.win.active && f.redeemedYear === f.win.active.year) || f.specialRedeemedAt).length;
+
   const submitAdd = async () => {
     if (!nf.name || !nf.phone || !nf.birthday) return;
     await window.FB.addBirthdayFan({ ...nf, source: "staff" });
@@ -795,12 +850,26 @@ function BirthdayOffer({ readOnly }) {
       </div>
       <p className="text-xs text-stone-500 mb-3">生日前後一日(共3日)都可以嚟食,可以搜尋姓名/電話。</p>
 
+      <div className="grid grid-cols-2 gap-3 mb-4">
+        <div className="rounded-md border border-[#C9A66B] bg-white/70 p-3 text-center">
+          <div className="text-2xl font-extrabold text-[#1C1917]">{totalRegistered}</div>
+          <div className="text-[11px] text-stone-500">已登記人數</div>
+        </div>
+        <div className="rounded-md border border-[#C9A66B] bg-white/70 p-3 text-center">
+          <div className="text-2xl font-extrabold text-[#1C1917]">{totalRedeemed}</div>
+          <div className="text-[11px] text-stone-500">已兌換人數</div>
+        </div>
+      </div>
+
       {!readOnly && showAdd && (
-        <div className="mb-4 bg-white/70 border border-[#C9A66B] rounded-md p-3 grid grid-cols-2 gap-2">
-          <input placeholder="姓名" value={nf.name} onChange={(e) => setNf({ ...nf, name: e.target.value })} className="col-span-2 border border-[#C9A66B] rounded-sm px-2 py-1.5 text-sm bg-white" />
-          <input placeholder="電話" value={nf.phone} onChange={(e) => setNf({ ...nf, phone: e.target.value })} className="border border-[#C9A66B] rounded-sm px-2 py-1.5 text-sm bg-white" />
-          <input type="date" value={nf.birthday} onChange={(e) => setNf({ ...nf, birthday: e.target.value })} className="border border-[#C9A66B] rounded-sm px-2 py-1.5 text-sm bg-white" />
-          <div className="col-span-2 flex gap-2 justify-end mt-1">
+        <div className="mb-4 bg-white/70 border border-[#C9A66B] rounded-md p-3 space-y-2">
+          <input placeholder="姓名" value={nf.name} onChange={(e) => setNf({ ...nf, name: e.target.value })} className="w-full border border-[#C9A66B] rounded-sm px-2 py-1.5 text-sm bg-white" />
+          <input placeholder="電話" value={nf.phone} onChange={(e) => setNf({ ...nf, phone: e.target.value })} className="w-full border border-[#C9A66B] rounded-sm px-2 py-1.5 text-sm bg-white" />
+          <div>
+            <div className="text-xs text-stone-500 mb-1">出生日期</div>
+            <BirthdaySelect value={nf.birthday} onChange={(v) => setNf({ ...nf, birthday: v })} />
+          </div>
+          <div className="flex gap-2 justify-end mt-1">
             <button onClick={() => setShowAdd(false)} className="text-xs px-3 py-1.5 rounded-sm border border-stone-400 text-stone-600">取消</button>
             <button onClick={submitAdd} className="text-xs px-3 py-1.5 rounded-sm bg-[#1C1917] text-white font-bold">加入</button>
           </div>
@@ -828,12 +897,22 @@ function BirthdayOffer({ readOnly }) {
                   <Seal tone="ink">—</Seal>
                 )}
               </div>
-              {!readOnly && active && (
-                <div className="mt-2">
-                  {redeemedThisWindow ? (
-                    <button onClick={() => window.FB.clearBirthdayRedeemed(f.id)} className="text-xs px-3 py-1.5 rounded-sm border border-stone-400 text-stone-600">取消兌換</button>
+              {f.specialRedeemedAt && (
+                <div className="mt-1 text-[11px] text-[#8a9a3c] font-semibold">🎁 特別兌換於 {fmtDate(f.specialRedeemedAt)}</div>
+              )}
+              {!readOnly && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {active && (
+                    redeemedThisWindow ? (
+                      <button onClick={() => window.FB.clearBirthdayRedeemed(f.id)} className="text-xs px-3 py-1.5 rounded-sm border border-stone-400 text-stone-600">取消兌換</button>
+                    ) : (
+                      <button onClick={() => window.FB.setBirthdayRedeemed(f.id, active.year)} className="text-xs px-3 py-1.5 rounded-sm bg-[#1C1917] text-white font-bold">✓ 標記已兌換</button>
+                    )
+                  )}
+                  {f.specialRedeemedAt ? (
+                    <button onClick={() => window.FB.clearSpecialRedeemed(f.id)} className="text-xs px-3 py-1.5 rounded-sm border border-stone-400 text-stone-600">取消特別兌換</button>
                   ) : (
-                    <button onClick={() => window.FB.setBirthdayRedeemed(f.id, active.year)} className="text-xs px-3 py-1.5 rounded-sm bg-[#1C1917] text-white font-bold">✓ 標記已兌換</button>
+                    <button onClick={() => window.FB.setSpecialRedeemed(f.id, t)} className="text-xs px-3 py-1.5 rounded-sm border border-[#B8262A] text-[#B8262A] font-bold">🎁 特別兌換</button>
                   )}
                 </div>
               )}
