@@ -285,9 +285,9 @@ function PublicBirthday() {
         <p className="text-xs text-stone-500 text-center">生日前後一日,共3日都可以嚟食</p></div>
         <input placeholder="姓名" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="w-full border border-[#C9A66B] rounded-sm px-3 py-2 text-sm bg-white" />
         <input placeholder="聯絡電話" inputMode="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="w-full border border-[#C9A66B] rounded-sm px-3 py-2 text-sm bg-white" />
-        <div>
-          <label className="text-xs text-stone-500 mb-1 block">出生日期</label>
+        <div className="relative">
           <input type="date" value={form.birthday} onChange={(e) => setForm({ ...form, birthday: e.target.value })} className="w-full border border-[#C9A66B] rounded-sm px-3 py-2 text-sm bg-white" />
+          {!form.birthday && <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-stone-400 pointer-events-none">出生日期</span>}
         </div>
         {error && <p className="text-xs text-[#B8262A]">{error}</p>}
         <button type="submit" disabled={saving} className="w-full bg-[#B8262A] text-white font-bold py-2 rounded-sm disabled:opacity-50">{saving ? "提交緊…" : "登記"}</button>
@@ -769,15 +769,16 @@ function BirthdayOffer({ readOnly }) {
 
   const t = ymd(new Date());
   const enriched = fans.map((f) => ({ ...f, win: birthdayWindowInfo(f.birthday, t) }));
+  const sortKey = (f) => {
+    // 用「最近一次生日窗口嘅開始日」做排序，正喺生效嘅當佢排最前
+    if (f.win.active) return f.win.active.start;
+    if (f.win.upcoming) return f.win.upcoming.start;
+    return "9999-99-99";
+  };
   const filtered = enriched.filter((f) => {
     const s = search.toLowerCase();
     return f.name?.toLowerCase().includes(s) || f.phone?.includes(s);
-  }).sort((a, b) => {
-    // 今日啱用嘅排最前
-    const aActive = !!a.win.active, bActive = !!b.win.active;
-    if (aActive !== bActive) return aActive ? -1 : 1;
-    return (a.birthday || "").localeCompare(b.birthday || "");
-  });
+  }).sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
 
   const submitAdd = async () => {
     if (!nf.name || !nf.phone || !nf.birthday) return;
