@@ -268,30 +268,37 @@ function daysInMonth(year, month) {
 }
 
 function BirthdaySelect({ value, onChange }) {
-  const [y, m, d] = (value || "").split("-");
+  const initial = (value || "").split("-");
+  const [y, setY] = useState(initial[0] || "");
+  const [m, setM] = useState(initial[1] ? String(Number(initial[1])) : "");
+  const [d, setD] = useState(initial[2] ? String(Number(initial[2])) : "");
+
   const curYear = new Date().getFullYear();
   const years = [];
   for (let yr = curYear; yr >= curYear - 100; yr--) years.push(yr);
   const maxDay = y && m ? daysInMonth(y, m) : 31;
 
-  const update = (ny, nm, nd) => {
-    if (!ny || !nm || !nd) { onChange(""); return; }
-    const dd = Math.min(Number(nd), daysInMonth(ny, nm));
-    onChange(`${ny}-${String(nm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`);
+  const commit = (ny, nm, nd) => {
+    if (ny && nm && nd) {
+      const dd = Math.min(Number(nd), daysInMonth(ny, nm));
+      onChange(`${ny}-${String(nm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`);
+    } else {
+      onChange("");
+    }
   };
 
   const selCls = "border border-[#C9A66B] rounded-sm px-2 py-2 text-sm bg-white flex-1 min-w-0";
   return (
     <div className="flex gap-2">
-      <select value={y || ""} onChange={(e) => update(e.target.value, m, d)} className={selCls}>
+      <select value={y} onChange={(e) => { setY(e.target.value); commit(e.target.value, m, d); }} className={selCls}>
         <option value="">年</option>
         {years.map((yr) => <option key={yr} value={yr}>{yr}</option>)}
       </select>
-      <select value={m || ""} onChange={(e) => update(y, e.target.value, d)} className={selCls}>
+      <select value={m} onChange={(e) => { setM(e.target.value); commit(y, e.target.value, d); }} className={selCls}>
         <option value="">月</option>
         {Array.from({ length: 12 }, (_, i) => i + 1).map((mo) => <option key={mo} value={mo}>{mo}月</option>)}
       </select>
-      <select value={d || ""} onChange={(e) => update(y, m, e.target.value)} className={selCls}>
+      <select value={d} onChange={(e) => { setD(e.target.value); commit(y, m, e.target.value); }} className={selCls}>
         <option value="">日</option>
         {Array.from({ length: maxDay }, (_, i) => i + 1).map((day) => <option key={day} value={day}>{day}</option>)}
       </select>
